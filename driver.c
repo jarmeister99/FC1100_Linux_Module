@@ -1,67 +1,51 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/pci.h>
-#include <linux/gpio.h>
 
-#define FC1100_VENDOR_ID 0x15EC
-#define FC1100_DEVICE_ID 0x1100
+#include "chardev.h"
+#include "fc1100.h"
 
 /* Meta Information */
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Jared Foster @ UnitX Labs");
-MODULE_DESCRIPTION("Driver for the Beckhoff FC1100 EtherCAT Slave Controller card");
+MODULE_AUTHOR("Jared Foster & Brian Frost @ UnitX Labs");
+MODULE_DESCRIPTION("Driver for the Beckhoff FC1100 EtherCAT Slave Controller PCI card");
+
+static void fc1100_remove(struct pci_dev *dev);
+static int fc1100_probe(struct pci_dev *dev, const struct pci_device_id *id);
 
 static struct pci_device_id fc1100_ids[] = {
 	{ PCI_DEVICE(FC1100_VENDOR_ID, FC1100_DEVICE_ID) },
 	{ }
 };
+
 MODULE_DEVICE_TABLE(pci, fc1100_ids);
 
-int read_device_config(struct pci_dev *pdev)
+static struct pci_driver fc1100_driver = {
+	.name = "fc1100",
+	.id_table = fc1100_ids,
+	.probe = fc1100_probe,
+	.remove = fc1100_remove,
+};
+
+void release_device(struct pci_dev *dev)
 {
-	u16 vendor, device, status_reg, command_reg;
-
-	pci_read_config_word(pdev, FC1100_VENDOR_ID, &vendor);
-	pci_read_config_word(pdev, FC1100_DEVICE_ID, &device);
-
-	printk("[FC1100] Device vid: 0x%X  pid: 0x%X\n", vendor, device);
-
-	pci_read_config_word(pdev, PCI_STATUS, &status_reg);
-
-	printk("[FC1100] Device status reg: 0x%X\n", status_reg);
-
-
-	pci_read_config_word(pdev, PCI_COMMAND, &command_reg);
-
-	if (command_reg | PCI_COMMAND_MEMORY) {
-		printk("[FC1100] Device supports memory access\n");
-
-		return 0;
-	}
-
-	printk("[FC1100] Device doesn't supports memory access!");
-
-	return -EIO;
+	pci_release_region(dev, 0);
+	pci_release_region(dev, 1);
+	pci_release_region(dev, 2);
+	pci_disable_device(dev);
 }
 
 static int fc1100_probe(struct pci_dev *dev, const struct pci_device_id *id) {
 	int status;
+	unsigned long mmio_start2, mmio_len2;
+	struct fc1100_driver *drv_priv;
+
 	void __iomem *ptr_bar0;
 	void __iomem *ptr_bar1;
 	void __iomem *ptr_bar2;
 
-	if (read_device_config(dev) < 0) {
-		return -EIO;
-	}
-
-	status = pci_resource_len(dev, 0);
-	printk("[FC1100] BAR0 is mapped to 0x%llx\n", pci_resource_start(dev, 0));
-
-	status = pci_resource_len(dev, 1);
-	printk("[FC1100] BAR1 is mapped to 0x%llx\n", pci_resource_start(dev, 1));
-
-	status = pci_resource_len(dev, 2);
-	printk("[FC1100] BAR2 is mapped to 0x%llx\n", pci_resource_start(dev, 2));
+	mmio_start2 = pci_resource_start(dev, 2);
+	mmio_len2 = pci_resource_len(dev, 2);
 
 	status = pcim_enable_device(dev);
 	if(status < 0) {
@@ -102,20 +86,40 @@ static int fc1100_probe(struct pci_dev *dev, const struct pci_device_id *id) {
 		return -1;
 	}
 
-	iowrite8(0x23, ptr_bar2 + 0x1000);
+	drv_priv = kzalloc(sizeof(struct fc1100_driver), GFP_KERNEL);
+	if (!drv_priv) {
+		release_device(dev);
+		return -ENOMEM;
+	}
+	drv_priv->hwmem = ioremap(mmio_start2, mmio_len2);
+	if (!drv_priv->hwmem) {
+		release_device(dev);
+		return -EIO;
+	}
+
+	create_char_devs(drv_priv);
+	pci_set_drvdata(dev, drv_priv);
 
 	return 0;
 }
 
 static void fc1100_remove(struct pci_dev *dev) {
-}
+	struct fc1100_driver *drv_priv = pci_get_drvdata(dev);
+	destroy_char_devs();
+	
+	if (drv_priv) {
+		if (drv_priv->hwmem) {
+			iounmap(drv_priv->hwmem);
+		}
 
-static struct pci_driver fc1100_driver = {
-	.name = "fc1100",
-	.id_table = fc1100_ids,
-	.probe = fc1100_probe,
-	.remove = fc1100_remove,
-};
+		kfree(drv_priv);
+	}
+
+	release_device(dev);
+
+	printk("[FC1100] Unloaded module");
+
+}
 
 static int __init load_driver(void) {
 	printk("[FC1100] Registering the PCI device\n");
