@@ -137,7 +137,7 @@ static ssize_t fc1100_dev_read(struct file *file, char __user *buf, size_t count
 	uint8_t* ret_data = kzalloc(count, GFP_ATOMIC);
 	uint8_t data;
 
-	void *read_address = drv->hwmem + 0x1000 + ((*offset) * sizeof(uint8_t));
+	void *read_address = drv->hwmem + ((*offset) * sizeof(uint8_t));
 
 	for (i = 0; i < count; i++) {
 		mutex_lock(&etx_mutex);
@@ -161,7 +161,7 @@ static ssize_t fc1100_dev_write(struct file *file, const char __user *buf, size_
 
 	uint8_t* data = kzalloc(count, GFP_ATOMIC);
 
-	void *write_address = drv->hwmem + 0x1000 + ((*offset) * sizeof(uint8_t));
+	void *write_address = drv->hwmem + ((*offset) * sizeof(uint8_t));
 
 	if (copy_from_user(data, buf, count)) {
 		return -EFAULT;
